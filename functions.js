@@ -1,5 +1,6 @@
-// Open (or create) the database with the version 1
+// Abrir (o crear) la base de datos versión 1
 let db;
+let allProducts = []; // copia en memoria para búsqueda y estadísticas
 const request = indexedDB.open('exampleProductDB', 1);
 
 request.onerror = function(event) {
@@ -8,7 +9,7 @@ request.onerror = function(event) {
 
 request.onsuccess = function(event) {
     db = event.target.result;
-    loadProductTable(); // Load products after the database is opened
+    loadProductTable();
 };
 
 request.onupgradeneeded = function(event) {
@@ -16,85 +17,90 @@ request.onupgradeneeded = function(event) {
     db.createObjectStore('products', { keyPath: 'id' });
 };
 
-//Load/Read products from IndexedDB and display them in the table
+// Evita inyección de HTML al mostrar nombres escritos por el usuario
+function escapeHTML(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Leer productos de IndexedDB
 function loadProductTable() {
-    const transaction = db.transaction(['products'], 'readonly');
-    const store = transaction.objectStore('products');
+    const store = db.transaction(['products'], 'readonly').objectStore('products');
+    const req = store.getAll();
 
-    const request = store.getAll();
-
-    request.onsuccess = function(event) {
-        const products = event.target.result;
-        const tableBody = document.querySelector('#productsTable tbody');
-        tableBody.innerHTML = ''; // Clear the table before adding new products
-
-        products.forEach(product => {
-            //Create a table row
-            const row = document.createElement('tr');
-            row.innerHTML = `
-                <td>${product.id}</td>
-                <td>${product.name}</td>
-                <td>$${product.price}</td>
-                <td><button class="delete-btn" data-id="${product.id}">Delete</button></td>
-            `;
-            tableBody.appendChild(row);
-        });
-
-    //Add event listeners for delete buttons
-        document.querySelectorAll('.delete-btn').forEach(button => {
-            button.addEventListener('click', deleteProduct);
-        });
+    req.onsuccess = function(event) {
+        allProducts = event.target.result;
+        renderTable();
     };
 }
 
-//Add/Create a new product
+// Dibujar tabla (aplica el filtro del buscador) y actualizar estadísticas
+function renderTable() {
+    const term = document.getElementById('search').value.trim().toLowerCase();
+    const filtered = allProducts.filter(p => p.name.toLowerCase().includes(term));
+    const tableBody = document.querySelector('#productsTable tbody');
+    tableBody.innerHTML = '';
+
+    if (filtered.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="4" class="empty">No hay productos para mostrar</td></tr>';
+    }
+
+    filtered.forEach(product => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>${product.id}</td>
+            <td>${escapeHTML(product.name)}</td>
+            <td>$${product.price.toFixed(2)}</td>
+            <td><button class="delete-btn" data-id="${product.id}">Eliminar</button></td>
+        `;
+        tableBody.appendChild(row);
+    });
+
+    document.querySelectorAll('.delete-btn').forEach(button => {
+        button.addEventListener('click', deleteProduct);
+    });
+
+    // Estadísticas sobre todos los productos
+    const total = allProducts.reduce((sum, p) => sum + p.price, 0);
+    document.getElementById('statCount').textContent = allProducts.length;
+    document.getElementById('statTotal').textContent = '$' + total.toFixed(2);
+}
+
+// Agregar producto
 function addProduct() {
     const name = document.getElementById('name').value.trim();
     const price = parseFloat(document.getElementById('price').value);
 
-    //Validate inputs
     if (!name || isNaN(price) || price <= 0) {
-        alert("Please enter a valid name and price.");
+        alert("Por favor ingresa un nombre y un precio válidos.");
         return;
     }
 
     const transaction = db.transaction(['products'], 'readwrite');
     const store = transaction.objectStore('products');
 
-    //Get/Read the products
-    const getAllRequest = store.getAll();
-
-    getAllRequest.onsuccess = function(event) {
+    store.getAll().onsuccess = function(event) {
         const products = event.target.result;
-        const newProduct = {
-            id: products.length > 0 ? products[products.length - 1].id + 1 : 1, // Assign an incremental ID
-            name: name,
-            price: price
-        };
+        const maxId = products.reduce((max, p) => Math.max(max, p.id), 0);
+        store.add({ id: maxId + 1, name: name, price: price });
+    };
 
-    //Add/Create the new product to the DB
-        store.add(newProduct);
-        //Clear the form fields
+    // Recargar solo cuando la escritura terminó
+    transaction.oncomplete = function() {
         document.getElementById('name').value = '';
         document.getElementById('price').value = '';
-
-    //Update the table with the new product
         loadProductTable();
     };
 }
 
-//Delete a product
+// Eliminar producto
 function deleteProduct(event) {
-    const productId = parseInt(event.target.getAttribute('data-id')); // Get the product ID from the button's data attribute
+    const productId = parseInt(event.target.getAttribute('data-id'));
     const transaction = db.transaction(['products'], 'readwrite');
-    const store = transaction.objectStore('products');
-
-    //Delete the product with the corresponding ID
-    store.delete(productId);
-
-    //Reload the product table to reflect changes
-    loadProductTable();
+    transaction.objectStore('products').delete(productId);
+    transaction.oncomplete = loadProductTable;
 }
 
-//Event listener for the button click
 document.getElementById('addProduct').addEventListener('click', addProduct);
+document.getElementById('search').addEventListener('input', renderTable);
